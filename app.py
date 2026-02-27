@@ -49,6 +49,11 @@ def get_video_info(url):
     except Exception as e:
         return None
 
+def extract_video_id(url, info_id):
+    """Extracts the exact 11-character YouTube video ID robustly."""
+    match = re.search(r"(?:v=|\/|youtu\.be\/)([0-9A-Za-z_-]{11})", url)
+    return match.group(1) if match else info_id
+
 def get_transcripts(video_id):
     """Fetches available subtitles using youtube-transcript-api"""
     try:
@@ -60,9 +65,9 @@ def get_transcripts(video_id):
             if t.is_generated:
                 label += " [Auto-generated]"
             transcripts[label] = t
-        return transcripts
+        return transcripts, None
     except Exception as e:
-        return {}
+        return None, str(e)
 
 def clean_filename(title):
     """Removes ONLY characters that break Windows/Mac file systems, keeps Emojis and Symbols intact."""
@@ -73,6 +78,10 @@ if "video_info" not in st.session_state:
     st.session_state.video_info = None
 if "last_url" not in st.session_state:
     st.session_state.last_url = ""
+if "transcripts" not in st.session_state:
+    st.session_state.transcripts = None
+if "transcript_error" not in st.session_state:
+    st.session_state.transcript_error = None
 
 # --- UI Layout ---
 url = st.text_input("🔗 Paste YouTube Video Link Here:")
@@ -80,16 +89,22 @@ url = st.text_input("🔗 Paste YouTube Video Link Here:")
 # Reset state if user pastes a new URL
 if url != st.session_state.last_url:
     st.session_state.video_info = None
+    st.session_state.transcripts = None
+    st.session_state.transcript_error = None
     st.session_state.last_url = url
 
 if st.button("🚀 Start", type="primary"):
     if url.strip() == "":
         st.warning("Please enter a valid YouTube URL first.")
     else:
-        with st.spinner("Fetching video details..."):
+        with st.spinner("Fetching video details and subtitles..."):
             info = get_video_info(url)
             if info:
                 st.session_state.video_info = info
+                vid_id = extract_video_id(url, info['id'])
+                subs, err = get_transcripts(vid_id)
+                st.session_state.transcripts = subs
+                st.session_state.transcript_error = err
             else:
                 st.error("Failed to fetch video details. Please check the link.")
 
@@ -110,12 +125,12 @@ if st.session_state.video_info:
 
     st.markdown("### 📝 Available Subtitles")
     
-    with st.spinner("Loading subtitle languages..."):
-        transcripts = get_transcripts(info['id'])
-
-    if not transcripts:
-        st.error("No subtitles found for this video.")
+    if st.session_state.transcripts is None and st.session_state.transcript_error:
+        st.error(f"⚠️ Could not load subtitles. YouTube might have blocked the request, or subtitles are disabled for this video.\n\n**Error details:** `{st.session_state.transcript_error}`")
+    elif not st.session_state.transcripts:
+        st.warning("No subtitles found for this video.")
     else:
+        transcripts = st.session_state.transcripts
         all_langs = list(transcripts.keys())
         
         # Selection options
