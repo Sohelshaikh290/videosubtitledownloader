@@ -57,15 +57,34 @@ def extract_video_id(url, info_id):
 def get_transcripts(video_id):
     """Fetches available subtitles using youtube-transcript-api"""
     try:
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-        transcripts = {}
-        for t in transcript_list:
-            # Mark auto-generated ones
-            label = f"{t.language} ({t.language_code})"
-            if t.is_generated:
-                label += " [Auto-generated]"
-            transcripts[label] = t
-        return transcripts, None
+        # Check if the modern API method exists (v0.3.0+)
+        if hasattr(YouTubeTranscriptApi, 'list_transcripts'):
+            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+            transcripts = {}
+            for t in transcript_list:
+                # Mark auto-generated ones
+                label = f"{t.language} ({t.language_code})"
+                if t.is_generated:
+                    label += " [Auto-generated]"
+                transcripts[label] = t
+            return transcripts, None
+        else:
+            # Fallback for outdated library versions (<= 0.2.0)
+            class FallbackTranscript:
+                def __init__(self, vid):
+                    self.vid = vid
+                    self.language_code = "default"
+                    
+                def fetch(self):
+                    return YouTubeTranscriptApi.get_transcript(self.vid)
+            
+            # Test if it actually fetches to ensure there is no hidden error
+            YouTubeTranscriptApi.get_transcript(video_id) 
+            
+            transcripts = {"Default Language (Fallback API)": FallbackTranscript(video_id)}
+            msg = "⚠️ Your local `youtube-transcript-api` library is outdated. Only the default language could be loaded. Please update using: `pip install --upgrade youtube-transcript-api`"
+            return transcripts, msg
+            
     except Exception as e:
         return None, str(e)
 
@@ -125,6 +144,10 @@ if st.session_state.video_info:
 
     st.markdown("### 📝 Available Subtitles")
     
+    # If transcripts successfully loaded but there is a non-fatal warning (like Fallback Mode trigger)
+    if st.session_state.transcripts is not None and st.session_state.transcript_error:
+        st.warning(st.session_state.transcript_error)
+        
     if st.session_state.transcripts is None and st.session_state.transcript_error:
         st.error(f"⚠️ Could not load subtitles. YouTube might have blocked the request, or subtitles are disabled for this video.\n\n**Error details:** `{st.session_state.transcript_error}`")
     elif not st.session_state.transcripts:
@@ -182,8 +205,4 @@ if st.session_state.video_info:
                             continue # Skip if a specific language fails to fetch
                 
                 st.download_button(
-                    label=f"⬇️ Download {len(selected_langs)} Subtitles (ZIP Folder)",
-                    data=zip_buffer.getvalue(),
-                    file_name=f"{safe_title}_Subtitles.zip",
-                    mime="application/zip"
-                )
+                    label=f"⬇️ Download {len(selected_langs)}
