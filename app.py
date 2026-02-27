@@ -155,6 +155,7 @@ if st.session_state.video_info:
                             'writesubtitles': True,
                             'writeautomaticsub': True,
                             'subtitleslangs': selected_lang_codes,
+                            'subtitlesformat': 'srt/best', # Force fetching natively in SRT if possible
                             'convertsubtitles': 'srt', # <--- Triggers FFmpeg
                             'outtmpl': os.path.join(temp_dir, '%(id)s.%(ext)s'),
                         }
@@ -166,24 +167,16 @@ if st.session_state.video_info:
                             processed = []
                             # Read converted files back from temporary directory
                             for file in os.listdir(temp_dir):
-                                if file.endswith('.srt') or file.endswith('.vtt'):
+                                if file.endswith('.srt'): # Strictly ONLY accept .srt files
                                     with open(os.path.join(temp_dir, file), 'rb') as f:
                                         data = f.read()
-                                    
-                                    # Parse yt-dlp output names: videoID.lang.srt
-                                    parts = file.split('.')
-                                    if len(parts) >= 3:
-                                        lang_code = parts[-2]
-                                        ext = parts[-1]
-                                    else:
-                                        lang_code = "sub"
-                                        ext = "srt" if file.endswith('.srt') else "vtt"
                                         
-                                    final_name = "{} [{}].{}".format(safe_title, lang_code, ext)
+                                    # Name exactly as video title, without the [en] or language code
+                                    final_name = "{}.srt".format(safe_title)
                                     processed.append((final_name, data))
                             
                             if not processed:
-                                st.error("No subtitles generated. Does your server have FFmpeg installed?")
+                                st.error("No .srt subtitles generated. Does your server have FFmpeg installed?")
                             else:
                                 st.session_state.processed_files = processed
                                 
