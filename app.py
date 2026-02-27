@@ -26,11 +26,12 @@ elif mode == "Night 🌙":
             [data-testid="stHeader"] { background-color: #0E1117; }
             p, h1, h2, h3, h4, h5, h6, label, span { color: #FAFAFA !important; }
             .stCheckbox label { color: #FAFAFA !important; }
+            .stRadio label { color: #FAFAFA !important; }
         </style>
     """, unsafe_allow_html=True)
 
 st.title("🎬 YouTube Subtitle Downloader")
-st.markdown("Download `.srt` subtitles from any YouTube video utilizing **FFmpeg** for high-quality extraction.")
+st.markdown("Download subtitles from any YouTube video utilizing **FFmpeg**. Extract as SRT, Raw VTT, or Plain Text!")
 
 # --- Helper Functions ---
 def get_video_info(url):
@@ -51,7 +52,6 @@ def get_video_info(url):
                 for lang, tracks in info['automatic_captions'].items():
                     name = tracks[0].get('name', lang)
                     label = "{} ({}) [Auto-generated]".format(name, lang)
-                    # Prefer manual subs over auto-generated if both exist
                     if lang not in subs.values():
                         subs[label] = lang
                         
@@ -67,12 +67,32 @@ def get_video_info(url):
         return None
 
 def clean_filename(title):
-    """Removes ONLY characters that break Windows/Mac file systems, keeps Emojis and Symbols intact."""
+    """Removes ONLY characters that break Windows/Mac file systems."""
     return re.sub(r'[\\/*?:"<>|]', "", title)
 
 def clear_processed_cache():
-    """Clears generated files if user changes language selection."""
+    """Clears generated files if user changes selections."""
     st.session_state.processed_files = None
+
+def srt_to_text(srt_bytes):
+    """Strips timestamps, sequence numbers, and HTML tags from SRT to provide pure text."""
+    text = srt_bytes.decode('utf-8', errors='ignore')
+    # Remove HTML formatting tags (like <i>, <font>)
+    text = re.sub(r'<[^>]+>', '', text)
+    lines = text.splitlines()
+    
+    clean_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.isdigit():  # Skip sequence numbers
+            continue
+        if '-->' in stripped:   # Skip timestamp lines
+            continue
+        clean_lines.append(stripped)
+        
+    return '\n'.join(clean_lines).encode('utf-8')
 
 # --- Session State Management ---
 if "video_info" not in st.session_state:
@@ -85,7 +105,6 @@ if "processed_files" not in st.session_state:
 # --- UI Layout ---
 url = st.text_input("🔗 Paste YouTube Video Link Here:")
 
-# Reset state if user pastes a new URL
 if url != st.session_state.last_url:
     st.session_state.video_info = None
     st.session_state.processed_files = None
@@ -114,11 +133,10 @@ if st.session_state.video_info:
     with col2:
         st.subheader(info['title'])
         st.write("**👤 Channel:** {}".format(info['channel']))
-        # Convert seconds to HH:MM:SS
         duration_str = str(datetime.timedelta(seconds=info['duration']))
         st.write("**⏱️ Runtime:** {}".format(duration_str))
 
-    st.markdown("### 📝 Available Subtitles")
+    st.markdown("### 📝 Subtitle Settings")
     
     subs_map = info['available_subs']
     if not subs_map:
@@ -126,7 +144,14 @@ if st.session_state.video_info:
     else:
         all_langs = list(subs_map.keys())
         
-        # Selection options
+        # 1. Format Selection
+        format_choice = st.radio(
+            "1️⃣ Choose Output Format:", 
+            ["SRT (SubRip - Recommended)", "Raw (VTT - Original)", "Text Only (No Timestamps)"],
+            on_change=clear_processed_cache
+        )
+        
+        # 2. Language Selection
         select_all = st.checkbox("✅ Select All Available Languages", on_change=clear_processed_cache)
         
         if select_all:
@@ -134,7 +159,7 @@ if st.session_state.video_info:
             st.info("{} languages selected.".format(len(all_langs)))
         else:
             selected_langs = st.multiselect(
-                "Or pick specific languages:", 
+                "2️⃣ Pick specific languages:", 
                 options=all_langs, 
                 default=[all_langs[0]] if all_langs else [],
                 on_change=clear_processed_cache
@@ -142,48 +167,71 @@ if st.session_state.video_info:
 
         # Download Logic using FFmpeg
         if selected_langs:
-            if st.button("⚙️ Process Subtitles with FFmpeg", type="secondary"):
-                with st.spinner("Downloading and converting using FFmpeg..."):
+            if st.button("⚙️ Process Subtitles", type="secondary"):
+                with st.spinner("Extracting & Processing..."):
                     safe_title = clean_filename(info['title'])
                     selected_lang_codes = [subs_map[label] for label in selected_langs]
                     
                     with tempfile.TemporaryDirectory() as temp_dir:
-                        # yt-dlp config strictly designed to convert via ffmpeg
+                        # Configure yt-dlp based on selected format
                         ydl_opts = {
                             'quiet': True,
                             'skip_download': True,
                             'writesubtitles': True,
                             'writeautomaticsub': True,
                             'subtitleslangs': selected_lang_codes,
-                            'subtitlesformat': 'srt/best', # Force fetching natively in SRT if possible
-                            'convertsubtitles': 'srt', # <--- Triggers FFmpeg
                             'outtmpl': os.path.join(temp_dir, '%(id)s.%(ext)s'),
                         }
+                        
+                        if format_choice == "Raw (VTT - Original)":
+                            ydl_opts['subtitlesformat'] = 'vtt/best'
+                            target_ext = '.vtt'
+                        else:
+                            # For SRT or Text, we let FFmpeg convert it to SRT first
+                            ydl_opts['subtitlesformat'] = 'srt/best'
+                            ydl_opts['convertsubtitles'] = 'srt'
+                            target_ext = '.srt'
                         
                         try:
                             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                                 ydl.download([url])
                             
                             processed = []
-                            # Read converted files back from temporary directory
                             for file in os.listdir(temp_dir):
-                                if file.endswith('.srt'): # Strictly ONLY accept .srt files
+                                if file.endswith(target_ext):
                                     with open(os.path.join(temp_dir, file), 'rb') as f:
                                         data = f.read()
+                                    
+                                    # Identify language code from file (e.g., id.en.srt)
+                                    parts = file.split('.')
+                                    lang_code = parts[-2] if len(parts) >= 3 else "sub"
+                                    
+                                    # Apply Text parsing if requested
+                                    if format_choice == "Text Only (No Timestamps)":
+                                        data = srt_to_text(data)
+                                        final_ext = "txt"
+                                    elif format_choice == "Raw (VTT - Original)":
+                                        final_ext = "vtt"
+                                    else:
+                                        final_ext = "srt"
                                         
-                                    # Name exactly as video title, without the [en] or language code
-                                    final_name = "{}.srt".format(safe_title)
+                                    # Name perfectly if only 1 language selected
+                                    if len(selected_langs) == 1:
+                                        final_name = "{}.{}".format(safe_title, final_ext)
+                                    else:
+                                        final_name = "{} [{}].{}".format(safe_title, lang_code, final_ext)
+                                        
                                     processed.append((final_name, data))
                             
                             if not processed:
-                                st.error("No .srt subtitles generated. Does your server have FFmpeg installed?")
+                                st.error("Failed to extract subtitles. If choosing SRT/Text, ensure FFmpeg is installed.")
                             else:
                                 st.session_state.processed_files = processed
                                 
                         except Exception as e:
-                            st.error("Error processing with FFmpeg: {}".format(e))
+                            st.error("Error processing subtitles: {}".format(e))
             
-            # Show standard Streamlit download buttons if processed successfully
+            # Streamlit download buttons
             if st.session_state.processed_files:
                 st.success("✅ Processed successfully!")
                 processed_files = st.session_state.processed_files
@@ -192,7 +240,7 @@ if st.session_state.video_info:
                 if len(processed_files) == 1:
                     file_name, data = processed_files[0]
                     st.download_button(
-                        label="⬇️ Download Subtitle ({})".format(file_name),
+                        label="⬇️ Download {}".format(file_name),
                         data=data,
                         file_name=file_name,
                         mime="text/plain"
@@ -204,7 +252,7 @@ if st.session_state.video_info:
                             zip_file.writestr(file_name, data)
                     
                     st.download_button(
-                        label="⬇️ Download {} Subtitles (ZIP Folder)".format(len(processed_files)),
+                        label="⬇️ Download {} Files (ZIP Folder)".format(len(processed_files)),
                         data=zip_buffer.getvalue(),
                         file_name="{}_Subtitles.zip".format(safe_title),
                         mime="application/zip"
